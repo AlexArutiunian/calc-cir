@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<title>CircuitJS + Метод контурных токов (выбор и конструктор контуров + U,I,мощности)</title>
+<style>
+  html,body{height:100%;margin:0}
+  .wrap{display:grid;grid-template-columns:1fr 640px;height:100%}
+  #left{display:flex;flex-direction:column}
+  #topbar{padding:8px;border-bottom:1px solid #ddd;display:flex;gap:8px;align-items:center}
+  iframe{flex:1;border:0}
+  .panel{border-left:1px solid #ddd;padding:10px;overflow:auto}
+  textarea{width:100%;height:150px;font-family:ui-monospace,Consolas,monospace}
+
+  .mat{border-collapse:separate;border-spacing:0;margin-top:6px}
+  .mat td,.mat th{
+    border:1px solid #d0d7de;padding:6px 8px;text-align:right;
+    font-family:ui-monospace,Consolas,monospace;background:#fff;font-size:12px
+  }
+  .mat th{background:#f6f8fa;font-weight:600;text-align:center}
+  .mat tr:nth-child(even) td{background:#fbfbfb}
+  .mat .diag{background:#f0f7ff}
+  .out{background:#fafafa;border:1px solid #e5e5e5;padding:8px;border-radius:6px;white-space:pre-wrap}
+  .row{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}
+  .pill{display:inline-block;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:2px 6px;border:1px solid #e2e2e2;border-radius:12px;margin:2px;background:#f8f8f8}
+  .loopbox{border:1px solid #ddd;border-radius:6px;padding:6px;margin:6px 0;background:#fff}
+  .loopbox h5{margin:0 0 6px;font-size:14px;color:#333;display:flex;align-items:center;gap:8px}
+  .note{color:#666;font-size:12px}
+  .danger{color:#b00020}
+  .ok{color:#0a7}
+  .grid{display:grid;grid-template-columns:repeat(6,auto);gap:6px;align-items:center}
+  .grid>div{padding:2px 0}
+  .hr{border-top:1px dashed #ddd;margin:8px 0}
+  .mono{font-family:ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="left">
+    <div id="topbar">
+      <strong>CircuitJS</strong>
+      <span style="color:#666">Загрузите netlist в симуляторе вручную</span>
+    </div>
+    <iframe src="https://www.falstad.com/circuit/circuitjs.html"></iframe>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin:4px 0 8px">Метод контурных токов: выбор + произвольные контуры + U/I/мощности</h3>
+
+    <div class="row">
+      <input type="file" id="fileIn">
+      <button id="btnSaveNet">Скачать netlist</button>
+      <label>f, Гц <input id="freq" type="number" value="400" style="width:120px"></label>
+      <label><input type="checkbox" id="chkRMS"> RMS (делить источники на √2)</label>
+    </div>
+
+    <textarea id="net" placeholder="Вставьте сюда netlist CircuitJS (текст)"></textarea>
+
+    <div class="row">
+      <button id="btnPrepare">Подготовить контуры</button>
+      <button id="btnAuto">Автовыбор</button>
+      <button id="btnShuffle">Перестроить остов (рандом)</button>
+      <span id="loopsHint" class="note"></span>
+    </div>
+
+    <div id="loopsPicker" class="out" style="display:none"></div>
+
+    <div id="customBox" class="out" style="display:none">
+      <h4 style="margin:0 0 6px">Конструктор произвольного контура</h4>
+      <div class="note" style="margin-bottom:6px">
+        Выберите ветви и их направление (−1 — против n1→n2, 0 — не использовать, +1 — по n1→n2).
+        Контур должен быть простым циклом (каждая вершина внутри выбранного набора имеет степень 2).
+      </div>
+      <div id="customGrid" class="grid"></div>
+      <div class="row">
+        <button id="btnAddCustom">Проверить и добавить в список</button>
+        <span id="customMsg" class="note"></span>
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="btnRun" disabled>Продолжить расчёт</button>
+      <button id="btnCopyZ">Копировать матрицу</button>
+      <button id="btnCopyI">Копировать I</button>
+    </div>
+
+    <h4>Ветви (индексы)</h4>
+    <div id="outBranches" class="out mono"></div>
+
+    <h4>Матрица решения (если есть ограничения — A = [Z Cᵀ; C 0], иначе Z):</h4>
+    <div id="outZ" class="out"></div>
+
+    <h4>Правая часть:</h4>
+    <div id="outB" class="out"></div>
+
+    <h4>Контурные токи (А):</h4>
+    <div id="outI" class="out"></div>
+
+    <h4>Состав выбранных контуров:</h4>
+    <div id="outLoops" class="out"></div>
+
+    <h4>Токи по ветвям (n1→n2):</h4>
+    <div id="outBranchCurr" class="out mono"></div>
+
+    <!-- НОВОЕ: напряжения на ветвях + модули/фазы/амплитуды + мощности + временные выражения -->
+    <h4>Падения напряжений на ветвях (комплексные U_b = V(n1)−V(n2))</h4>
+    <div id="outBranchVolt" class="out mono"></div>
+
+    <h4>Модули / фазы / амплитуды (токи и напряжения)</h4>
+    <div id="outMagPhase" class="out mono"></div>
+
+    <h4>Баланс мощностей</h4>
+    <div id="outPower" class="out mono"></div>
+
+    <h4>Временные выражения i_k(t) и u_k(t)</h4>
+    <div id="outTime" class="out mono"></div>
+
+    <h4>Диагностика:</h4>
+    <div id="log" class="out" style="background:#fff"></div>
+  </div>
+</div>
+
+<script>
+/* ==== Комплексная арифметика ==== */
+const C=(re,im=0)=>({re,im});
+const add=(a,b)=>C(a.re+b.re,a.im+b.im);
+const sub=(a,b)=>C(a.re-b.re,a.im-b.im);
+const mul=(a,b)=>C(a.re*b.re-a.im*b.im,a.re*b.im+a.im*b.re);
+const conj=a=>C(a.re,-a.im);
+const div=(a,b)=>{const d=b.re*b.re+b.im*b.im;return C((a.re*b.re+a.im*b.im)/d,(a.im*b.re-a.re*b.im)/d);};
+const inv=a=>div(C(1,0),a);
+const j=x=>C(0,x);
+const zero=C(0,0);
+const eps=1e-10;
+
+/* ==== Форматирование ==== */
+function cfmt(z,p=4){
+  let re=Math.abs(z.re)<eps?0:z.re, im=Math.abs(z.im)<eps?0:z.im;
+  if(re===0&&im===0) return '0';
+  if(im===0) return String(+re.toFixed(p));
+  if(re===0) return `${+im.toFixed(p)}i`;
+  const s=im>=0?'+':'';
+  return `${+re.toFixed(p)}${s}${+im.toFixed(p)}i`;
+}
+function matrixHTML(M){
+  if(!M||!M.length) return '';
+  const n=M.length,m=M[0].length;
+  let h='<table class="mat"><thead><tr><th></th>';
+  for(let j=0;j<m;j++) h+=`<th>${j+1}</th>`;
+  h+='</tr></thead><tbody>';
+  for(let i=0;i<n;i++){
+    h+=`<tr><th>${i+1}</th>`;
+    for(let j=0;j<m;j++){
+      const cls=i===j?' class="diag"':'';
+      h+=`<td${cls}>${cfmt(M[i][j])}</td>`;
+    }
+    h+='</tr>';
+  }
+  return h+'</tbody></table>';
+}
+function vectorHTML(v){
+  if(!v) return '';
+  let h='<table class="mat"><thead><tr><th>#</th><th>значение</th></tr></thead><tbody>';
+  for(let i=0;i<v.length;i++) h+=`<tr><th>${i+1}</th><td>${cfmt(v[i],6)}</td></tr>`;
+  return h+'</tbody></table>';
+}
+
+/* ==== Файлы ==== */
+fileIn.onchange=e=>{
+  const f=e.target.files?.[0]; if(!f) return;
+  const r=new FileReader(); r.onload=ev=>{ net.value = ev.target.result; };
+  r.readAsText(f);
+};
+btnSaveNet.onclick=()=>{
+  const t=net.value||''; const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([t],{type:'text/plain'}));
+  a.download='circuit.txt'; a.click();
+};
+
+/* ==== Парсер netlist CircuitJS ==== */
+function parseNetlist(txt){
+  const lines=(txt||'').split(/\r?\n/).map(s=>s.trim())
+    .filter(s=>s && !s.startsWith('o ') && !s.startsWith('38 ') && !s.startsWith('h '));
+  const key=(x,y)=>`${x},${y}`;
+  const parent=new Map();
+  const find=a=>{while(parent.get(a)!==a)a=parent.get(a);return a;}
+  const unite=(a,b)=>{a=find(a);b=find(b); if(a!==b) parent.set(a,b);}
+  const ensure=p=>{if(!parent.has(p)) parent.set(p,p);}
+
+  const pins=[];
+  for(const s of lines){
+    const t=s[0]; const a=s.split(/\s+/);
+    if(t==='w'){
+      const [,x1,y1,x2,y2]=a.map(Number);
+      const p1=key(x1,y1), p2=key(x2,y2);
+      ensure(p1); ensure(p2); unite(p1,p2);
+    }else if('rclvsi'.includes(t)){
+      const x1=+a[1],y1=+a[2],x2=+a[3],y2=+a[4];
+      const value=parseFloat(a[6]);
+      pins.push({t,x1,y1,x2,y2,value,raw:a});
+      ensure(key(x1,y1)); ensure(key(x2,y2));
+    }
+  }
+  const idMap=new Map(); let idx=0;
+  for(const n of parent.keys()){ const r=find(n); if(!idMap.has(r)) idMap.set(r,idx++); }
+  const nodeOf=(x,y)=>idMap.get(find(key(x,y)));
+  const branches=pins.map((p,i)=>({ ...p, n1:nodeOf(p.x1,p.y1), n2:nodeOf(p.x2,p.y2), idx:i }));
+  return {branches, nodesCount:idMap.size};
+}
+
+/* ==== Импедансы ветвей ==== */
+function branchZ(b,w){
+  switch(b.t){
+    case 'r': return C(b.value,0);
+    case 'l': return j(w*b.value);
+    case 'c': return inv(j(w*b.value));
+    case 'v': return C(0,0);
+    case 'i': return C(Infinity,0);
+    default : return C(Infinity,0);
+  }
+}
+
+/* ==== Узловой анализ (V/I источники) ==== */
+function solveNodal(model,w,scaleSrc=1){
+  const N=model.nodesCount;
+  const Y=Array.from({length:N},()=>Array.from({length:N},()=>C(0,0)));
+  const I=Array.from({length:N},()=>C(0,0));
+  const Vs=[];
+  for(const b of model.branches){
+    const Z=branchZ(b,w);
+    if(b.t==='v'){ Vs.push({n1:b.n1,n2:b.n2,E:C((b.value||0)*scaleSrc,0)}); continue; }
+    if(b.t==='i'){
+      const J=C((b.value||0)*scaleSrc,0);
+      I[b.n1]=sub(I[b.n1],J); I[b.n2]=add(I[b.n2],J);
+      continue;
+    }
+    const G=inv(Z);
+    if(!Number.isFinite(G.re) || !Number.isFinite(G.im)) continue;
+    const {n1,n2}=b;
+    if(n1===n2) continue;
+    Y[n1][n1]=add(Y[n1][n1],G);
+    Y[n2][n2]=add(Y[n2][n2],G);
+    Y[n1][n2]=sub(Y[n1][n2],G);
+    Y[n2][n1]=sub(Y[n2][n1],G);
+  }
+  const k=Vs.length;
+  const M=Array.from({length:N+k},()=>Array.from({length:N+k},()=>C(0,0)));
+  const RHS=Array.from({length:N+k},()=>C(0,0));
+  for(let r=0;r<N;r++){ for(let c=0;c<N;c++) M[r][c]=Y[r][c]; RHS[r]=I[r]; }
+  Vs.forEach(({n1,n2,E},i)=>{
+    const row=N+i;
+    M[row][n1]=add(M[row][n1],C(1,0));
+    M[row][n2]=sub(M[row][n2],C(1,0));
+    M[n1][N+i]=add(M[n1][N+i],C(1,0));
+    M[n2][N+i]=sub(M[n2][N+i],C(1,0));
+    RHS[row]=E;
+  });
+  const X=gaussComplex(M,RHS);
+  return {V:X.slice(0,N)};
+}
+function gaussComplex(A,b){
+  const n=A.length; A=A.map(r=>r.map(c=>C(c.re,c.im))); b=b.map(x=>C(x.re,x.im));
+  for(let i=0;i<n;i++){
+    let piv=i,best=0;
+    for(let r=i;r<n;r++){const m=A[r][i].re**2 + A[r][i].im**2; if(m>best){best=m;piv=r;}}
+    if(best===0) throw new Error('Сингулярная матрица');
+    if(piv!==i){ [A[i],A[piv]]=[A[piv],A[i]]; [b[i],b[piv]]=[b[piv],b[i]]; }
+    const invP=inv(A[i][i]);
+    for(let c=i;c<n;c++) A[i][c]=mul(A[i][c],invP);
+    b[i]=mul(b[i],invP);
+    for(let r=0;r<n;r++){
+      if(r===i) continue;
+      const f=A[r][i];
+      if(Math.hypot(f.re,f.im)<1e-18) continue;
+      for(let c=i;c<n;c++) A[r][c]=sub(A[r][c], mul(f,A[i][c]));
+      b[r]=sub(b[r], mul(f,b[i]));
+    }
+  }
+  return b;
+}
+
+/* ==== Фундаментальные контуры (I-источники — хорды) с рандомизацией остова ==== */
+function buildLoops(model, forceChordPred = null, shuffle=false){
+  const N=model.nodesCount, m=model.branches.length;
+  const adj=Array.from({length:N},()=>[]);
+  model.branches.forEach((br,idx)=>{
+    adj[br.n1].push({to:br.n2, idx});
+    adj[br.n2].push({to:br.n1, idx});
+  });
+  if(shuffle){
+    for(const a of adj){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } }
+  }
+  const parent=Array(N).fill(-1);
+  const edgeTo=Array(N).fill(-1);
+  const inTree=Array(m).fill(false);
+  const q=[0]; parent[0]=0;
+  while(q.length){
+    const u=q.shift();
+    for(const e of adj[u]){
+      if(forceChordPred && forceChordPred(e.idx)) continue;
+      if(parent[e.to]===-1){
+        parent[e.to]=u; edgeTo[e.to]=e.idx; inTree[e.idx]=true; q.push(e.to);
+      }
+    }
+  }
+  const chords=[]; for(let i=0;i<m;i++) if(!inTree[i]) chords.push(i);
+
+  function pathEdges(u,v){
+    const up=[], vp=[];
+    let a=u; while(a!==parent[a]){ up.push({v:a,e:edgeTo[a]}); a=parent[a]; }
+    let b=v; while(b!==parent[b]){ vp.push({v:b,e:edgeTo[b]}); b=parent[b]; }
+    while(up.length && vp.length && up[up.length-1].e===vp[vp.length-1].e){ up.pop(); vp.pop(); }
+    return {up, vp};
+  }
+
+  const loops=[];
+  for(const ch of chords){
+    const br=model.branches[ch];
+    const {up,vp}=pathEdges(br.n1,br.n2);
+    const col=Array(m).fill(0);
+    for(const s of up)  col[s.e] += (model.branches[s.e].n1===parent[s.v]? +1 : -1);
+    for(const s of vp)  col[s.e] += (model.branches[s.e].n1===s.v? +1 : -1);
+    col[ch] += +1;
+    loops.push({col, chordIndex: ch, origin:'base'});
+  }
+  return {loops, chords};
+}
+
+/* ==== Глобальное состояние ==== */
+let gModel=null, gW=0, gLoopsAll=[], gLreq=0, gSelectedIdx=[], gRMS=false, gShuffle=false;
+
+/* ==== Вспомогательное ==== */
+function branchLabelShort(b,w){
+  if(b.t==='r') return `R(${b.value}Ω)`;
+  if(b.t==='l') return `L(${b.value}H, jωL=${cfmt(j(w*b.value))}Ω)`;
+  if(b.t==='c') return `C(${b.value}F, 1/(jωC)=${cfmt(inv(j(w*b.value)))}Ω)`;
+  if(b.t==='v') return `V(${b.value}В)`;
+  if(b.t==='i') return `I(${b.value}А)`;
+  return b.t.toUpperCase();
+}
+function renderBranchesTable(model){
+  const rows = model.branches.map(b=>`${b.idx+1}\t${b.t.toUpperCase()}\t${b.n1}→${b.n2}\t${b.value}`);
+  return '№\tтип\tn1→n2\tноминал\n'+rows.join('\n');
+}
+function renderLoopsPicker(model, loops, w){
+  const box = document.createElement('div');
+  loops.forEach((Lp, i)=>{
+    const items=[];
+    for(let e=0;e<model.branches.length;e++){
+      const s=Lp.col[e]; if(!s) continue;
+      const b=model.branches[e];
+      items.push((s>0?'+':'−')+branchLabelShort(b,w));
+    }
+    const div=document.createElement('div');
+    div.className='loopbox';
+    div.innerHTML = `<h5><label><input type="checkbox" class="loopchk" data-i="${i}"> Контур ${i+1}${Lp.origin==='custom'?' (пользовательский)':''}</label>
+                      <span class="note"> ${Lp.origin==='base'?`(хорда: ветвь #${Lp.chordIndex+1})`:'(пользовательский)'}</span></h5>
+                     ${items.map(t=>`<span class="pill">${t}</span>`).join(' ')}`;
+    box.appendChild(div);
+  });
+  return box.innerHTML;
+}
+function updateHint(){
+  const picked = gSelectedIdx.length;
+  const hint = document.getElementById('loopsHint');
+  if(picked===gLreq) { hint.innerHTML = `<span class="ok">Выбрано ${picked}/${gLreq}. Можно продолжать.</span>`; }
+  else { hint.innerHTML = `<span class="danger">Нужно выбрать ровно ${gLreq}. Сейчас ${picked}.</span>`; }
+  document.getElementById('btnRun').disabled = picked!==gLreq;
+}
+function rankReal(M){
+  const A=M.map(r=>r.slice());
+  const n=A.length,m=A[0].length;
+  let r=0,c=0; const EPS=1e-12;
+  while(r<n && c<m){
+    let piv=r;
+    for(let i=r;i<n;i++) if(Math.abs(A[i][c])>Math.abs(A[piv][c])) piv=i;
+    if(Math.abs(A[piv][c])<EPS){ c++; continue; }
+    if(piv!==r){ [A[piv],A[r]]=[A[r],A[piv]]; }
+    const d=A[r][c];
+    for(let j=c;j<m;j++) A[r][j]/=d;
+    for(let i=0;i<n;i++){
+      if(i===r) continue;
+      const f=A[i][c]; if(!f) continue;
+      for(let j=c;j<m;j++) A[i][j]-=f*A[r][j];
+    }
+    r++; c++;
+  }
+  return r;
+}
+
+/* ==== МКТ по заданным контурам ==== */
+function meshSolveWithLoops(model, w, selectedLoops, useRMS){
+  const m=model.branches.length;
+  const Zb=Array.from({length:m},(_,e)=>branchZ(model.branches[e],w));
+  const B = selectedLoops.map(Lp=>Lp.col.slice());
+  let L = B.length;
+
+  // Z = B * diag(Zb_passive) * B^T
+  const ZL=Array.from({length:L},()=>Array.from({length:L},()=>C(0,0)));
+  for(let p=0;p<L;p++){
+    for(let q=0;q<L;q++){
+      let acc=C(0,0);
+      for(let e=0;e<m;e++){
+        const bp=B[p][e], bq=B[q][e]; if(!bp||!bq) continue;
+        const Z=Zb[e]; if(!Number.isFinite(Z.re)||!Number.isFinite(Z.im)) continue;
+        acc=add(acc, mul(C(bp*bq,0), Z));
+      }
+      ZL[p][q]=acc;
+    }
+  }
+
+  const scale = useRMS ? (1/Math.SQRT2) : 1;
+  const E=new Array(m).fill(C(0,0));
+  const Jlist=[];
+  for(let e=0;e<m;e++){
+    const b=model.branches[e];
+    if(b.t==='v') E[e]=C((b.value||0)*scale,0);
+    if(b.t==='i') Jlist.push({e, J:C((b.value||0)*scale,0)});
+  }
+  const Vmesh=new Array(L).fill(C(0,0));
+  for(let p=0;p<L;p++){
+    let acc=C(0,0);
+    for(let e=0;e<m;e++) if(B[p][e]) acc=add(acc, mul(C(B[p][e],0), E[e]));
+    Vmesh[p]=acc;
+  }
+
+  const loopMeta=[];
+  for(let p=0;p<L;p++){
+    const items=[];
+    for(let e=0;e<m;e++){
+      const s=B[p][e]; if(!s) continue;
+      const b=model.branches[e];
+      items.push({sign:Math.sign(s), idx:e, b});
+    }
+    loopMeta.push({kind:'base/custom', items});
+  }
+
+  const cons=[];
+  let Lcur=L;
+  function pushZeroRowCol(Z){
+    for(let i=0;i<Z.length;i++) Z[i].push(C(0,0));
+    Z.push(Array.from({length:Z[0].length},()=>C(0,0)));
+  }
+  for(const {e,J} of Jlist){
+    const touched=[];
+    for(let p=0;p<Lcur && p<B.length;p++){
+      const val = (p<B.length && e<B[p].length) ? B[p][e] : 0;
+      if(val) touched.push({p,s:val});
+    }
+    if(touched.length===0){
+      pushZeroRowCol(ZL);
+      Vmesh.push(C(0,0));
+      const row=new Array(Lcur+1).fill(0);
+      row[Lcur]=1;
+      cons.push({row, rhs:J});
+      loopMeta.push({kind:'pseudo', items:[{sign:+1, idx:e, b:model.branches[e]}], note:'псевдоконтур (I-источник-мостик)'});
+      Lcur+=1;
+    }else if(touched.length===1){
+      const row=new Array(Lcur).fill(0);
+      row[touched[0].p]=1;
+      cons.push({row, rhs:mul(C(touched[0].s,0),J)});
+    }else if(touched.length===2){
+      const row=new Array(Lcur).fill(0);
+      row[touched[0].p]=touched[0].s;
+      row[touched[1].p]=touched[1].s;
+      cons.push({row, rhs:J});
+    }
+  }
+
+  let Il, Ashow=null, bshow=null;
+  if(cons.length===0){
+    Il = gaussComplex(
+      ZL.slice(0,Lcur).map(r=>r.slice(0,Lcur)),
+      Vmesh.slice(0,Lcur)
+    );
+    Ashow = ZL.slice(0,Lcur).map(r=>r.slice(0,Lcur));
+    bshow = Vmesh.slice(0,Lcur);
+  }else{
+    const Lr=cons.length, n=Lcur+Lr;
+    const A=Array.from({length:n},()=>Array.from({length:n},()=>C(0,0)));
+    const bvec=Array.from({length:n},()=>C(0,0));
+    for(let i=0;i<Lcur;i++) for(let j=0;j<Lcur;j++) A[i][j]=C(ZL[i][j].re,ZL[i][j].im);
+    for(let r=0;r<Lr;r++){
+      const row=cons[r].row;
+      for(let j=0;j<Lcur;j++){
+        const c=row[j]; if(!c) continue;
+        A[Lcur+r][j]=add(A[Lcur+r][j],C(c,0));
+        A[j][Lcur+r]=add(A[j][Lcur+r],C(c,0));
+      }
+    }
+    for(let i=0;i<Lcur;i++) bvec[i]=Vmesh[i];
+    for(let r=0;r<Lr;r++) bvec[Lcur+r]=cons[r].rhs;
+
+    Ashow=A.map(r=>r.map(z=>C(z.re,z.im)));
+    bshow=bvec.map(z=>C(z.re,z.im));
+
+    const X=gaussComplex(A,bvec);
+    Il=X.slice(0,Lcur);
+  }
+
+  // Ветвевые токи из mesh: I_b = B^T * I_l
+  const Ib = Array(m).fill(C(0,0));
+  for(let e=0;e<m;e++){
+    let acc=C(0,0);
+    for(let p=0;p<B.length;p++){
+      const s=B[p][e]||0; if(!s) continue;
+      acc = add(acc, mul(C(s,0), Il[p]||zero));
+    }
+    Ib[e]=acc;
+  }
+
+  return {Ashow,bshow,Il,loopMeta,Ib};
+}
+
+/* ==== Рендер ==== */
+function renderLoopMeta(loopMeta, model, w){
+  if(!loopMeta || !loopMeta.length) return '';
+  function branchLabel(b){
+    const typ=b.t.toUpperCase();
+    if(b.t==='r') return `${typ}(${b.value} Ω)`;
+    if(b.t==='l') return `${typ}(${b.value} H, jωL=${cfmt(j(w*b.value))} Ω)`;
+    if(b.t==='c') return `${typ}(${b.value} F, 1/(jωC)=${cfmt(inv(j(w*b.value)))} Ω)`;
+    if(b.t==='v') return `${typ}(${b.value} В)`;
+    if(b.t==='i') return `${typ}(${b.value} А)`;
+    return typ;
+  }
+  let html='';
+  for(let i=0;i<loopMeta.length;i++){
+    const Lm=loopMeta[i];
+    html+=`<div class="loopbox"><h5>Контур ${i+1} ${Lm.kind==='pseudo'?'— псевдоконтур':''}</h5>`;
+    if(Lm.items && Lm.items.length){
+      html+=Lm.items.map(it=>{
+        const s = it.sign>0 ? '+' : '−';
+        return `<span class="pill">${s}${branchLabel(it.b)}</span>`;
+      }).join(' ');
+    }else{
+      html+='(пусто)';
+    }
+    if(Lm.note) html+=`<div class="note" style="margin-top:6px">${Lm.note}</div>`;
+    html+='</div>';
+  }
+  return html;
+}
+function renderBranchesCurr(model, Ib){
+  let h='№\tтип\tn1→n2\tноминал\tI (А)\n';
+  for(let e=0;e<model.branches.length;e++){
+    const b=model.branches[e];
+    h+=`${e+1}\t${b.t.toUpperCase()}\t${b.n1}→${b.n2}\t${b.value}\t${cfmt(Ib[e],6)}\n`;
+  }
+  return h;
+}
+function renderBranchesVolt(model, Ub){
+  let h='№\tтип\tn1→n2\tноминал\tU (В)\n';
+  for(let e=0;e<model.branches.length;e++){
+    const b=model.branches[e];
+    h+=`${e+1}\t${b.t.toUpperCase()}\t${b.n1}→${b.n2}\t${b.value}\t${cfmt(Ub[e],6)}\n`;
+  }
+  return h;
+}
+function mag(z){ return Math.hypot(z.re,z.im); }
+function arg(z){ return Math.atan2(z.im,z.re); }
+
+function renderMagPhase(model, Ib, Ub){
+  let h='— Токи (ветви): |I|, φ(I) [рад], I_m=|I|*√2\n';
+  for(let e=0;e<model.branches.length;e++){
+    const mI = mag(Ib[e]), aI = arg(Ib[e]), Im = mI*Math.SQRT2;
+    h+=`I_${e+1}: |I|=${mI.toFixed(3)} A, φ=${aI.toFixed(3)} рад, I_m=${Im.toFixed(3)} A\n`;
+  }
+  h+='\n— Напряжения (ветви): |U|, φ(U) [рад], U_m=|U|*√2\n';
+  for(let e=0;e<model.branches.length;e++){
+    const mU = mag(Ub[e]), aU = arg(Ub[e]), Um = mU*Math.SQRT2;
+    h+=`U_${e+1}: |U|=${mU.toFixed(3)} В, φ=${aU.toFixed(3)} рад, U_m=${Um.toFixed(3)} В\n`;
+  }
+  return h;
+}
+
+function renderPowerBalance(model, w, Ib, Ub){
+  // пассивные: S_k = U * conj(I); P = sum(Re), Q = sum(Im)
+  let P=0, Q=0;
+  for(let e=0;e<model.branches.length;e++){
+    const b=model.branches[e];
+    if(b.t==='r' || b.t==='l' || b.t==='c'){
+      const Sk = mul(Ub[e], conj(Ib[e]));
+      P += Sk.re;
+      Q += Sk.im;
+    }
+  }
+  const Sp = C(P,Q);
+
+  // источники: V-источник — U известное (по направлению n1->n2), ток = Ib[e]
+  //            I-источник — I=J (задан), U = Ub[e]
+  let Se = C(0,0), Sj = C(0,0);
+  for(let e=0;e<model.branches.length;e++){
+    const b=model.branches[e];
+    if(b.t==='v'){
+      const Sv = mul(C(b.value||0,0), conj(Ib[e])); // E * conj(I)
+      Se = add(Se, Sv);
+    }else if(b.t==='i'){
+      const J = C(b.value||0,0);
+      const Si = mul(Ub[e], conj(J)); // U * conj(J)
+      Sj = add(Sj, Si);
+    }
+  }
+  const Sist = add(Se,Sj);
+
+  let h='Мощности (фазорные, в ВА; P=Re, Q=Im)\n';
+  h+=`Суммарная на пассивных: S_potr = ${cfmt(Sp)}  (P=${P.toFixed(3)} Вт, Q=${Q.toFixed(3)} вар)\n`;
+  h+=`Источник(и) ЭДС:       S_e    = ${cfmt(Se)}\n`;
+  h+=`Источник(и) тока:       S_J    = ${cfmt(Sj)}\n`;
+  h+=`Итого источники:        S_ist  = ${cfmt(Sist)}\n`;
+  return h;
+}
+
+function renderTimeForms(model, w, Ib, Ub){
+  // i_k(t) = I_m sin(ω t + φ_I),  u_k(t) = U_m sin(ω t + φ_U)
+  // (DC-компоненты здесь не добавляем, т.к. схема задаётся в AC.)
+  let h='Токи (пиковые амплитуды, синус): i_k(t) = I_m·sin(ωt + φ)\n';
+  for(let e=0;e<model.branches.length;e++){
+    const mI=mag(Ib[e])*Math.SQRT2, aI=arg(Ib[e]);
+    h+=`i_${e+1}(t) = ${mI.toFixed(3)}·sin(${w.toFixed(3)}·t ${aI>=0?'+':''}${aI.toFixed(3)}) A\n`;
+  }
+  h+='\nНапряжения: u_k(t) = U_m·sin(ωt + φ)\n';
+  for(let e=0;e<model.branches.length;e++){
+    const mU=mag(Ub[e])*Math.SQRT2, aU=arg(Ub[e]);
+    h+=`u_${e+1}(t) = ${mU.toFixed(3)}·sin(${w.toFixed(3)}·t ${aU>=0?'+':''}${aU.toFixed(3)}) V\n`;
+  }
+  return h;
+}
+
+/* ==== UI: подготовка, выбор, конструктор ==== */
+function logMsg(s){ log.textContent=s; }
+
+function rebuildLoopsUI(){
+  loopsPicker.innerHTML = renderLoopsPicker(gModel, gLoopsAll, gW);
+  gSelectedIdx = [];
+  loopsPicker.querySelectorAll('.loopchk').forEach(ch=>{
+    ch.onchange = ()=>{
+      const i = +ch.dataset.i;
+      if(ch.checked){ if(!gSelectedIdx.includes(i)) gSelectedIdx.push(i); }
+      else { gSelectedIdx = gSelectedIdx.filter(x=>x!==i); }
+      updateHint();
+    };
+  });
+  updateHint();
+}
+
+btnPrepare.onclick = ()=>{
+  try{
+    const netTxt = net.value.trim();
+    if(!netTxt){ return logMsg('Netlist пуст'); }
+    const f=parseFloat(freq.value||'0');
+    const w=2*Math.PI*f;
+    gRMS = chkRMS.checked;
+
+    const model=parseNetlist(netTxt);
+    const {loops} = buildLoops(model,(idx)=>model.branches[idx].t==='i', gShuffle);
+    gModel = model; gW=w; gLoopsAll = loops.slice();
+    gLreq = loops.length;
+    gSelectedIdx = [];
+
+    outBranches.textContent = renderBranchesTable(model);
+
+    loopsHint.innerHTML = `Нужно выбрать ровно <b>${gLreq}</b> контуров.`;
+    loopsPicker.style.display = 'block';
+    customBox.style.display = 'block';
+    rebuildLoopsUI();
+
+    // конструктор контура
+    const cg = document.getElementById('customGrid');
+    cg.innerHTML = '';
+    const head = ['#','тип','n1→n2','номинал','s (−1/0/+1)',''];
+    for(const h of head){ const d=document.createElement('div'); d.innerHTML=`<b>${h}</b>`; cg.appendChild(d); }
+    gModel.branches.forEach((b,i)=>{
+      const d1=document.createElement('div'); d1.textContent = i+1; cg.appendChild(d1);
+      const d2=document.createElement('div'); d2.textContent = b.t.toUpperCase(); cg.appendChild(d2);
+      const d3=document.createElement('div'); d3.textContent = `${b.n1}→${b.n2}`; cg.appendChild(d3);
+      const d4=document.createElement('div'); d4.textContent = b.value; cg.appendChild(d4);
+      const d5=document.createElement('div');
+      d5.innerHTML = `<select class="selS" data-i="${i}">
+                        <option value="0">0</option>
+                        <option value="1">+1</option>
+                        <option value="-1">-1</option>
+                      </select>`;
+      cg.appendChild(d5);
+      const d6=document.createElement('div'); d6.innerHTML=`<span class="note">${branchLabelShort(b,gW)}</span>`; cg.appendChild(d6);
+    });
+
+    customMsg.textContent='';
+    logMsg(`Готово. Фундаментальных контуров: ${gLreq}. Отметьте ровно ${gLreq} и/или соберите свой контур внизу.`);
+  }catch(e){
+    logMsg('Ошибка подготовки: '+(e.message||e));
+  }
+};
+
+btnShuffle.onclick = ()=>{
+  gShuffle = !gShuffle;
+  btnPrepare.click();
+};
+
+btnAuto.onclick = ()=>{
+  if(!gLoopsAll.length){ return logMsg('Сначала нажмите «Подготовить контуры»'); }
+  gSelectedIdx = gLoopsAll.map((_,i)=>i);
+  loopsPicker.querySelectorAll('.loopchk').forEach(ch=>{ ch.checked = true; });
+  updateHint();
+};
+
+btnAddCustom.onclick = ()=>{
+  try{
+    if(!gModel) return;
+    const col = Array(gModel.branches.length).fill(0);
+    document.querySelectorAll('.selS').forEach(sel=>{
+      const i=+sel.dataset.i, v=+sel.value;
+      if(v) col[i]=v;
+    });
+    const edges = col.map((s,i)=>s?i:null).filter(x=>x!==null);
+    if(edges.length<3){ customMsg.innerHTML='<span class="danger">Мало рёбер для контура</span>'; return; }
+
+    const deg = new Map();
+    for(const e of edges){
+      const b=gModel.branches[e];
+      deg.set(b.n1,(deg.get(b.n1)||0)+1);
+      deg.set(b.n2,(deg.get(b.n2)||0)+1);
+    }
+    for(const [node,d] of deg){
+      if(d!==2){ customMsg.innerHTML='<span class="danger">Набор рёбер не образует один простой цикл</span>'; return; }
+    }
+    const adjSel=new Map();
+    for(const e of edges){
+      const b=gModel.branches[e];
+      if(!adjSel.has(b.n1)) adjSel.set(b.n1,[]);
+      if(!adjSel.has(b.n2)) adjSel.set(b.n2,[]);
+      adjSel.get(b.n1).push(b.n2);
+      adjSel.get(b.n2).push(b.n1);
+    }
+    const start = gModel.branches[edges[0]].n1;
+    const vis=new Set(); const st=[start];
+    while(st.length){
+      const u=st.pop(); if(vis.has(u)) continue; vis.add(u);
+      (adjSel.get(u)||[]).forEach(v=>{ if(!vis.has(v)) st.push(v); });
+    }
+    if(vis.size!==adjSel.size){ customMsg.innerHTML='<span class="danger">Выбранный набор рёбер распадается на несколько компонент</span>'; return; }
+
+    gLoopsAll.push({col, chordIndex:-1, origin:'custom'});
+    rebuildLoopsUI();
+    customMsg.innerHTML='<span class="ok">Добавлен. Отметьте его галочкой в списке выше</span>';
+  }catch(e){
+    customMsg.innerHTML='<span class="danger">Ошибка: '+(e.message||e)+'</span>';
+  }
+};
+
+/* ==== Запуск расчёта ==== */
+btnRun.onclick = ()=>{
+  try{
+    if(!gModel){ return logMsg('Сначала подготовьте контуры'); }
+    if(gSelectedIdx.length!==gLreq){ return logMsg('Нужно выбрать ровно '+gLreq+' контуров'); }
+
+    const selected = gSelectedIdx.map(i=>gLoopsAll[i]);
+
+    // Проверка независимости
+    const B = selected.map(Lp=>Lp.col.slice());
+    const rnk = rankReal(B);
+    if(rnk<gLreq){ return logMsg('Выбранные контуры линейно зависимы (rank='+rnk+', нужно '+gLreq+'). Измените выбор.'); }
+
+    // Решение через МКТ
+    const {Ashow,bshow,Il,loopMeta,Ib} = meshSolveWithLoops(gModel, gW, selected, gRMS);
+
+    // Узловые напряжения (для напряжений на ветвях и мощностей)
+    const scale = gRMS ? (1/Math.SQRT2) : 1;
+    const {V} = solveNodal(gModel, gW, scale);
+    const Ub = gModel.branches.map(b => sub(V[b.n1]||zero, V[b.n2]||zero)); // U = Vn1 - Vn2
+
+    // Вывод базовый
+    outZ.innerHTML = matrixHTML(Ashow);
+    outB.innerHTML = vectorHTML(bshow);
+    outI.innerHTML = vectorHTML(Il);
+    outLoops.innerHTML = renderLoopMeta(loopMeta, gModel, gW);
+    outBranches.textContent = renderBranchesTable(gModel);
+    outBranchCurr.textContent = renderBranchesCurr(gModel, Ib);
+
+    // НОВОЕ: напряжения, модули/фазы/амплитуды, мощность, время
+    outBranchVolt.textContent = renderBranchesVolt(gModel, Ub);
+    outMagPhase.textContent = renderMagPhase(gModel, Ib, Ub);
+    outPower.textContent = renderPowerBalance(gModel, gW, Ib, Ub);
+    outTime.textContent = renderTimeForms(gModel, gW, Ib, Ub);
+
+    logMsg(`Узлов: ${gModel.nodesCount}; ветвей: ${gModel.branches.length}; выбрано контуров: ${gSelectedIdx.length} (rank=${rnk})`);
+  }catch(e){
+    logMsg('Ошибка расчёта: '+(e.message||e));
+  }
+};
+
+btnCopyZ.onclick=()=>{ navigator.clipboard.writeText(outZ.innerText||''); };
+btnCopyI.onclick=()=>{ navigator.clipboard.writeText(outI.innerText||''); };
+</script>
+</body>
+</html>
